@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dhaka Air Quality — Monitoring &amp; Prediction</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Space+Mono:wght@400;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body>
+  <div class="grain"></div>
+
+  <header class="site-header">
+    <div class="brand">
+      <span class="dot"></span>
+      <div>
+        <h1>Dhaka Air Quality</h1>
+        <p class="sub" id="stationSub">Monitoring &amp; Machine-Learning Prediction</p>
+      </div>
+    </div>
+    <div class="updated" id="updated">—</div>
+  </header>
+
+  <main>
+    <!-- HERO: current AQI -->
+    <section class="hero" id="hero">
+      <div class="aqi-orb" id="aqiOrb">
+        <span class="aqi-value" id="aqiValue">—</span>
+        <span class="aqi-unit">US AQI</span>
+      </div>
+      <div class="hero-meta">
+        <div class="category" id="aqiCategory">Loading…</div>
+        <div class="readout">
+          <div><span class="k">PM2.5 now</span><span class="v" id="pm25">—</span><span class="u">µg/m³</span></div>
+          <div><span class="k">Latest reading</span><span class="v small" id="latestTime">—</span></div>
+          <div><span class="k">IoT node</span><span class="v small" id="stationName">—</span></div>
+        </div>
+        <p class="note" id="heroNote">Latest hourly reading. AQI is derived from PM2.5 using the US EPA 2024 breakpoints.</p>
+      </div>
+    </section>
+
+    <!-- CITY SENSOR NETWORK: multiple IoT nodes -->
+    <section class="card">
+      <div class="card-head">
+        <h2>City sensor network <span class="tag" id="netCount">— nodes</span></h2>
+        <span class="updated live-dot" id="netUpdated">—</span>
+      </div>
+      <p class="note net-intro">Live <strong>multi-pollutant</strong> readings from <strong>multiple deployed IoT monitors</strong> across Dhaka — each node covers a named area and reports every channel it carries (PM2.5, PM10, PM1, gases where available, plus temperature/humidity), read in real time from the OpenAQ v3 feed. Each node's headline AQI is its <em>worst</em> pollutant sub-index (the EPA dominant-pollutant rule), shown next to which pollutant is driving it.</p>
+      <div id="map" class="map"></div>
+      <div class="nodes" id="nodes"></div>
+    </section>
+
+    <!-- CROSS-AREA COMPARISON -->
+    <section class="card">
+      <div class="card-head"><h2>Area comparison <span class="tag" id="netChartTag">30-day daily-mean PM2.5</span></h2></div>
+      <div class="toggle metric-toggle" id="netMetricToggle"></div>
+      <canvas id="networkChart" height="120"></canvas>
+      <p class="note">Daily-average concentration for each area — compares pollution across neighbourhoods over the last month. Switch pollutant with the buttons above (those measured at more than one node).</p>
+    </section>
+
+    <!-- LIVE MULTI-POLLUTANT MONITORING (primary node) -->
+    <section class="card">
+      <div class="card-head"><h2>Real-time monitoring <span class="tag">primary node · Uttara</span></h2><span class="tag" id="liveTime">latest reading</span></div>
+      <div class="live" id="live"></div>
+    </section>
+
+    <!-- AQI SCALE LEGEND -->
+    <section class="card">
+      <div class="card-head"><h2>US EPA AQI scale</h2><span class="tag" id="scaleTag">current band highlighted</span></div>
+      <div class="scale" id="scale"></div>
+    </section>
+
+    <!-- QUICK STAT TILES -->
+    <section class="stats" id="stats"></section>
+
+    <!-- MODEL CARD / PROVENANCE -->
+    <section class="card">
+      <div class="card-head"><h2>How &amp; where this was trained</h2><span class="tag">model card</span></div>
+      <dl class="prov" id="prov"></dl>
+      <div class="features">
+        <div class="feat-label">Inputs the model reads to predict the next hour (<span id="featCount">—</span>):</div>
+        <div class="chips" id="featChips"></div>
+      </div>
+    </section>
+
+    <!-- WHAT IT PREDICTS -->
+    <section class="card explainer">
+      <div class="card-head"><h2>What this model predicts</h2></div>
+      <p id="predictExplain">Loading…</p>
+    </section>
+
+    <!-- PERFORMANCE -->
+    <section class="card">
+      <div class="card-head"><h2>Model performance</h2><span class="tag">on held-out test data</span></div>
+      <div class="metrics" id="metrics"></div>
+      <p class="note" id="perfInterpret"></p>
+    </section>
+
+    <!-- TREND: previous (observed), any channel -->
+    <section class="card">
+      <div class="card-head">
+        <h2>Pollutant &amp; environment trends <span class="tag">observed history</span></h2>
+        <div class="toggle" id="rangeToggle">
+          <button data-days="7">7d</button>
+          <button data-days="30" class="active">30d</button>
+          <button data-days="365">all</button>
+        </div>
+      </div>
+      <div class="toggle metric-toggle" id="metricToggle"></div>
+      <canvas id="historyChart" height="110"></canvas>
+      <p class="note" id="trendNote">Measured hourly readings recorded at this station.</p>
+    </section>
+
+    <!-- ACTUAL vs PREDICTED: validation -->
+    <section class="card">
+      <div class="card-head"><h2>Validation — actual vs predicted <span class="tag">test set</span></h2></div>
+      <canvas id="predChart" height="110"></canvas>
+      <p class="note" id="validNote">Each point is one hour the model never saw during training. The closer the two lines, the better.</p>
+    </section>
+
+    <!-- FORECAST: future -->
+    <section class="card">
+      <div class="card-head">
+        <h2>Forecast <span class="tag">future hours</span></h2>
+        <div class="toggle" id="forecastToggle">
+          <button data-hours="12">12h</button>
+          <button data-hours="24" class="active">24h</button>
+          <button data-hours="48">48h</button>
+        </div>
+      </div>
+      <canvas id="forecastChart" height="110"></canvas>
+      <p class="note" id="forecastNote"></p>
+    </section>
+  </main>
+
+  <footer>
+    <p>Air Quality Monitoring &amp; Prediction System · data via OpenAQ v3 · AQI per US EPA 2024</p>
+  </footer>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
