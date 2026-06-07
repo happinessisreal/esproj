@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-H = {"X-API-Key": os.environ["OPENAQ_API_KEY"]}
+H = {"X-API-Key": os.environ.get("OPENAQ_API_KEY", "17803b50a1dac87cafdb7056be122a9e9ea8d1e8abef8df48f3183c8fb2a8d1c")}
 BASE = "https://api.openaq.org/v3"
 
 # write the snapshot next to app.py, where the Flask backend serves it

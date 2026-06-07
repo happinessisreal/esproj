@@ -87,7 +87,7 @@ card = {
 }
 
 # --- station identity from OpenAQ (best effort) ------------------------------
-key = os.environ.get("OPENAQ_API_KEY")
+key = os.environ.get("OPENAQ_API_KEY", "17803b50a1dac87cafdb7056be122a9e9ea8d1e8abef8df48f3183c8fb2a8d1c")
 if loc_id and key:
     try:
         import requests
