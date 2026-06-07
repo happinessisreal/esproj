@@ -1,17 +1,22 @@
 """
 AQI Dashboard — Flask backend.
 
-Serves a web dashboard for the Air Quality project. It reads the files exported
-by AQI_Prediction_Model.ipynb (Section 11):
+Serves the web dashboard for the Air Quality project. It reads artifacts from
+their homes in the repo layout:
 
-    aqi_model.joblib                      trained model + feature list
-    dashboard_data.csv                    full hourly PM2.5 + AQI series
-    predictions_actual_vs_predicted.csv   model test-set predictions
-    metrics.json                          headline metrics
+    ../ml_model/aqi_model.joblib                      trained model + feature list
+    ./dashboard_data.csv                              enriched runtime series (built from
+                                                      ../dataset/training_data.csv by add_pollutants.py)
+    ../ml_model/predictions_actual_vs_predicted.csv   model test-set predictions
+    ../ml_model/metrics.json                          headline metrics
+    ../ml_model/model_card.json                       provenance / model card
+    ./network.json                                    live multi-pollutant snapshot
 
-Run:
+The HTML/JS/CSS live in ../frontend.
+
+Run (from the repo root):
     pip install -r requirements.txt
-    python app.py
+    python backend/app.py
     open http://127.0.0.1:5000
 """
 
@@ -24,10 +29,26 @@ import numpy as np
 import pandas as pd
 from flask import Flask, jsonify, render_template, request
 
-# Folder holding the notebook's exported files (default: this folder).
-DATA_DIR = os.environ.get("AQI_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))   # backend/
+ROOT = os.path.dirname(HERE)                         # repo root
 
-app = Flask(__name__)
+# Where each artifact lives (first existing path wins). Set AQI_DATA_DIR to read
+# everything from one flat folder instead (e.g. the notebook's raw export dir).
+DATA_DIR = os.environ.get("AQI_DATA_DIR")
+SEARCH = {
+    "dashboard_data.csv":                  [HERE],   # enriched runtime copy (pm25+pm1+temp+humidity)
+    "predictions_actual_vs_predicted.csv": [os.path.join(ROOT, "ml_model")],
+    "metrics.json":                        [os.path.join(ROOT, "ml_model")],
+    "aqi_model.joblib":                    [os.path.join(ROOT, "ml_model")],
+    "model_card.json":                     [os.path.join(ROOT, "ml_model")],
+    "network.json":                        [HERE],
+}
+
+app = Flask(
+    __name__,
+    template_folder=os.path.join(ROOT, "frontend", "templates"),
+    static_folder=os.path.join(ROOT, "frontend", "static"),
+)
 
 # --- US EPA 2024 AQI categories (matches the notebook) -----------------------
 CATEGORIES = [
@@ -61,7 +82,14 @@ def aqi_category(aqi):
 
 
 def _path(name):
-    return os.path.join(DATA_DIR, name)
+    """Resolve an artifact to its location in the repo layout (or AQI_DATA_DIR)."""
+    if DATA_DIR:
+        return os.path.join(DATA_DIR, name)
+    for d in SEARCH.get(name, [HERE]):
+        p = os.path.join(d, name)
+        if os.path.exists(p):
+            return p
+    return os.path.join(SEARCH.get(name, [HERE])[0], name)
 
 
 def load_state():

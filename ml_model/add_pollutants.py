@@ -14,6 +14,12 @@ loc_id = int(sys.argv[1]) if len(sys.argv) > 1 else 6157905
 H = {"X-API-Key": os.environ["OPENAQ_API_KEY"]}
 BASE = "https://api.openaq.org/v3"
 
+# read the training series (../dataset/), write the enriched dashboard copy (../backend/)
+HERE = os.path.dirname(os.path.abspath(__file__))            # ml_model/
+ROOT = os.path.dirname(HERE)
+IN_CSV  = os.path.join(ROOT, "dataset", "training_data.csv")     # pm25/aqi the model trained on
+OUT_CSV = os.path.join(ROOT, "backend", "dashboard_data.csv")    # + pm1/temp/humidity for the dashboard
+
 # parameter name -> output column name
 WANT = {"temperature": "temperature", "relativehumidity": "humidity", "pm1": "pm1"}
 
@@ -54,7 +60,7 @@ def download(sensor_id, start, end):
 
 
 # --- base series (keep pm25/aqi exactly as the model pipeline produced them) --
-base = pd.read_csv("dashboard_data.csv")
+base = pd.read_csv(IN_CSV)
 base["datetime"] = pd.to_datetime(base["datetime"], utc=True)
 base = base[["datetime", "pm25", "aqi"]].set_index("datetime").sort_index()
 start, end = base.index.min().date().isoformat(), (base.index.max() + pd.Timedelta(days=1)).date().isoformat()
@@ -78,7 +84,7 @@ if "pm1" in base:         base["pm1"] = base["pm1"].clip(0, 1000)
 for c in ("temperature", "humidity", "pm1"):
     if c in base: base[c] = base[c].interpolate(limit=12).ffill().bfill().round(1)
 
-base.reset_index().to_csv("dashboard_data.csv", index=False)
+base.reset_index().to_csv(OUT_CSV, index=False)
 cols = [c for c in base.columns]
-print("wrote dashboard_data.csv with columns:", ["datetime"] + cols)
+print("wrote", OUT_CSV, "with columns:", ["datetime"] + cols)
 print("latest:", base.iloc[-1][cols].to_dict())

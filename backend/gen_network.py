@@ -24,6 +24,10 @@ import requests
 H = {"X-API-Key": os.environ["OPENAQ_API_KEY"]}
 BASE = "https://api.openaq.org/v3"
 
+# write the snapshot next to app.py, where the Flask backend serves it
+HERE = os.path.dirname(os.path.abspath(__file__))            # backend/
+OUT_PATH = os.path.join(HERE, "network.json")
+
 # (location_id, area name it covers, is_primary)  — the node the ML model uses.
 NODES = [
     (6157905, "Uttara",     True),
@@ -235,6 +239,6 @@ out = {
     # back-compat: old frontend read `comparison` (PM2.5 only)
     "comparison": comp_out.get("pm25", {"labels": [], "series": []}),
 }
-json.dump(out, open("network.json", "w"), indent=2)
-print(f"\nwrote network.json — {len(nodes)} live nodes, "
+json.dump(out, open(OUT_PATH, "w"), indent=2)
+print(f"\nwrote {OUT_PATH} — {len(nodes)} live nodes, "
       f"pollutants: {', '.join(out['pollutants'])}")

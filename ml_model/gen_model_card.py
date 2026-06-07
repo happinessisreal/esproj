@@ -17,17 +17,21 @@ import joblib
 DHAKA_LAT, DHAKA_LON = 23.8103, 90.4125
 loc_id = int(sys.argv[1]) if len(sys.argv) > 1 else 0
 
+# this script lives in ml_model/; the training data lives in ../dataset/
+HERE = os.path.dirname(os.path.abspath(__file__))            # ml_model/
+DATASET = os.path.join(os.path.dirname(HERE), "dataset")
+
 # --- derive everything we can from the exported files ------------------------
-d = pd.read_csv("dashboard_data.csv")
+d = pd.read_csv(os.path.join(DATASET, "training_data.csv"))
 d["datetime"] = pd.to_datetime(d["datetime"], utc=True)
 d = d.sort_values("datetime").reset_index(drop=True)
 
-p = pd.read_csv("predictions_actual_vs_predicted.csv")
+p = pd.read_csv(os.path.join(HERE, "predictions_actual_vs_predicted.csv"))
 p["datetime"] = pd.to_datetime(p["datetime"], utc=True)
 
-bundle = joblib.load("aqi_model.joblib")
+bundle = joblib.load(os.path.join(HERE, "aqi_model.joblib"))
 features = list(bundle["features"])
-metrics = json.load(open("metrics.json"))
+metrics = json.load(open(os.path.join(HERE, "metrics.json")))
 
 # reconstruct the modellable set exactly as the notebook does (lag/roll warmup)
 f = d.set_index("datetime").copy()
@@ -113,6 +117,6 @@ if loc_id and key:
     except Exception as e:
         print("station lookup failed (card written without it):", e)
 
-json.dump(card, open("model_card.json", "w"), indent=2)
+json.dump(card, open(os.path.join(HERE, "model_card.json"), "w"), indent=2)
 print(f"wrote model_card.json | train={n_train}h test={n_test}h total={len(d)}h "
       f"features={len(features)} model={card['model']}")
