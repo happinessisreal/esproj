@@ -11,7 +11,7 @@ import os, sys, time, requests
 import pandas as pd
 
 loc_id = int(sys.argv[1]) if len(sys.argv) > 1 else 6157905
-H = {"X-API-Key": os.environ["OPENAQ_API_KEY"]}
+H = {"X-API-Key": "17803b50a1dac87cafdb7056be122a9e9ea8d1e8abef8df48f3183c8fb2a8d1c"}
 BASE = "https://api.openaq.org/v3"
 
 # parameter name -> output column name
