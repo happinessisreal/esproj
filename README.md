@@ -44,6 +44,22 @@ To point the app at files in another folder:
 AQI_DATA_DIR=/path/to/your/outputs python app.py
 ```
 
+## Real-time data
+The **Current AQI** hero and the **City sensor network** map read the *current*
+reading straight from the OpenAQ v3 feed at request time, not just the exported
+files (`live.py`). The fetch is cached and runs in a background thread, so requests
+stay fast; if OpenAQ is unreachable the app transparently falls back to the file
+snapshot (the UI then shows `snapshot · …` instead of `live · …`). The exported
+files are also hot-reloaded when they change on disk, so re-running the notebook
+export or `gen_network.py` shows up without restarting the server. All timestamps
+are displayed in Bangladesh Standard Time (BST, UTC+6).
+
+```bash
+OPENAQ_API_KEY=...    # API key (a project key is bundled so it works out-of-box)
+AQI_LIVE=0            # disable live fetching, serve files only
+AQI_LIVE_TTL=600      # cache lifetime in seconds (default 10 min)
+```
+
 ## Notes
 - The **city sensor network** reads `network.json`, built by `gen_network.py`. That
   script now pulls *every* parameter each node exposes (not just PM2.5) and computes

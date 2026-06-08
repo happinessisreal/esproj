@@ -10,6 +10,8 @@ const WARN = "#f9a825";
 let CHANNELS = [];
 let curMetric = "pm25";
 let curDays = 30;
+let curArea = "";       // forecast area (empty -> primary node)
+let curFcHours = 24;    // forecast horizon
 
 async function getJSON(url) {
   try { const r = await fetch(url); return await r.json(); }
@@ -24,7 +26,7 @@ function setText(id, v) { const n = el(id); if (n) n.textContent = v; }
 // ====================================================================
 function renderSummary(s) {
   if (!s || s.error) { setText("aqiCategory", (s && s.error) || "No data"); return; }
-  setText("updated", "updated " + s.latest_time);
+  setText("updated", (s.live ? "live · " : "snapshot · ") + s.latest_time);
   setText("aqiValue", fmt(s.aqi));
   setText("pm25", fmt(s.pm25));
   setText("latestTime", s.latest_time);
@@ -41,10 +43,8 @@ function renderLive(channels, now, latestTime) {
   if (latestTime) setText("liveTime", "as of " + latestTime);
   el("live").innerHTML = CHANNELS.map((ch) => {
     const v = now && now[ch.key] != null ? now[ch.key] : "—";
-    const sim = ch.source === "simulated"
-      ? `<span class="badge sim" title="No public CO₂ feed — placeholder for the MQ135 sensor">simulated</span>` : "";
     return `<div class="tile" style="--c:${ch.color}">
-      <div class="tile-top"><span class="tile-label">${ch.label}</span>${sim}</div>
+      <div class="tile-top"><span class="tile-label">${ch.label}</span></div>
       <div class="tile-val">${v}<span class="tile-unit">${ch.unit}</span></div>
     </div>`;
   }).join("");
@@ -76,8 +76,8 @@ function popupReadings(readings) {
 function renderNetwork(net) {
   if (!net || net.error) { setText("netCount", "unavailable"); return; }
   NET = net;
-  setText("netCount", `${net.node_count} live nodes`);
-  setText("netUpdated", "live · " + net.generated_at);
+  setText("netCount", `${net.node_count} ${net.live === false ? "stations" : "live stations"}`);
+  setText("netUpdated", (net.live === false ? "snapshot · " : "live · ") + net.generated_at);
 
   // node cards (worst AQI first, server-sorted) — every channel the node reports
   el("nodes").innerHTML = (net.nodes || []).map((n) => {
@@ -216,13 +216,13 @@ function renderMeta(card) {
     if (st.distance_km_from_dhaka_centre != null) loc += ` · ${st.distance_km_from_dhaka_centre} km from city centre`;
   }
 
-  setText("stationSub", st.name ? `IoT node · ${st.name}` : "Monitoring & Machine-Learning Prediction");
+  setText("stationSub", st.name ? `Monitoring station · ${st.name}` : "Monitoring & Machine-Learning Prediction");
   setText("stationName", st.name || "—");
 
   const rows = [
     ["Live data feed", card.data_source],
-    ["IoT sensor node", st.name],
-    ["Device / network", st.provider ? `${st.provider} · WiFi air-quality monitor (our deployed node)` : null],
+    ["Monitoring station", st.name],
+    ["Network / provider", st.provider ? `${st.provider} · public WiFi air-quality station (via OpenAQ)` : null],
     ["Location", loc],
     ["Pollutant", `${card.parameter} (${card.parameter_units}), ${card.cadence}`],
     ["Data coverage", `${co.start} → ${co.end}`],
@@ -300,9 +300,10 @@ function renderMetrics(card, summaryMetrics) {
 function renderExplainer(card) {
   const m = card?.model || "the model";
   setText("predictExplain",
-    `Readings come from a WiFi-connected air-quality monitor deployed in Uttara, Dhaka (an AirGradient node we treat as our IoT sensor node), streamed in through the OpenAQ v3 API. ` +
+    `Readings come from public air-quality monitoring stations across Dhaka, streamed in through the OpenAQ v3 API; the model is trained on the primary station in Uttara. ` +
     `This model is a short-horizon nowcaster. Each hour it estimates the next hour's PM2.5 from the recent past — the last few hourly readings, the 6- and 24-hour rolling averages, and the time of day, day of week and month. That predicted PM2.5 is then converted into a US AQI value and category using the EPA 2024 breakpoints. ` +
-    `The forecast below extends this recursively: each predicted hour is fed back in as the input for the next, so accuracy is strongest in the first few hours and softens further out. Because recent PM2.5 dominates the inputs, ${m} behaves like a smart persistence model — strong for the next few hours, not a substitute for a weather-driven multi-day forecast.`);
+    `The forecast below extends this recursively: each predicted hour is fed back in as the input for the next, so accuracy is strongest in the first few hours and softens further out. Because recent PM2.5 dominates the inputs, ${m} behaves like a smart persistence model — strong for the next few hours, not a substitute for a weather-driven multi-day forecast. ` +
+    `You can point the forecast at any station in the city with the Area selector — the same model runs on that station's own recent readings.`);
 }
 
 // ====================================================================
@@ -359,9 +360,7 @@ async function loadTrend() {
     backgroundColor: hexToRgba(ch.color, 0.12), fill: true,
   }], h.labels, ch.unit);
   setText("trendNote",
-    ch.source === "simulated"
-      ? `${ch.label} is a simulated channel (no public feed; stands in for the MQ135 sensor). All other channels are measured at the station.`
-      : `Measured hourly ${ch.label} (${ch.unit}) recorded at this station — the real, observed past.`);
+    `Measured hourly ${ch.label} (${ch.unit}) recorded at this station — the real, observed past.`);
 }
 
 async function loadPredictions() {
@@ -375,16 +374,30 @@ async function loadPredictions() {
   ], p.labels);
 }
 
-async function loadForecast(hours = 24) {
-  const f = await getJSON(`/api/forecast?hours=${hours}`);
+// populate the forecast area picker from the live network nodes (primary first)
+function buildForecastAreas(net) {
+  const sel = el("forecastArea");
+  if (!sel || !net || !net.nodes) return;
+  const nodes = [...net.nodes].sort((a, b) => (b.primary ? 1 : 0) - (a.primary ? 1 : 0));
+  sel.innerHTML = nodes.map((n) =>
+    `<option value="${n.area}">${n.area}${n.primary ? " (primary)" : ""}</option>`).join("");
+  const primary = nodes.find((n) => n.primary) || nodes[0];
+  curArea = primary ? primary.area : "";
+  sel.value = curArea;
+  sel.onchange = () => { curArea = sel.value; loadForecast(); };
+}
+
+async function loadForecast() {
+  const f = await getJSON(`/api/forecast?hours=${curFcHours}&area=${encodeURIComponent(curArea)}`);
   const note = el("forecastNote");
   if (f.error) { note.textContent = f.error; if (forecastChart) forecastChart.destroy(); return; }
   const peak = Math.max(...f.pm25), peakAt = f.labels[f.pm25.indexOf(peak)];
-  note.textContent = `Recursive projection from the latest reading. Peak in this window: ${peak} µg/m³ around ${peakAt}.`;
+  const where = f.area || "the primary node";
+  note.textContent = `Recursive projection for ${where} from its latest reading${f.from ? ` (${f.from})` : ""}. Peak in this window: ${peak} µg/m³ around ${peakAt}.`;
   const ctx = el("forecastChart");
   if (forecastChart) forecastChart.destroy();
   forecastChart = lineChart(ctx, [{
-    label: "Forecast PM2.5", data: f.pm25, borderColor: "#c98bdb",
+    label: `Forecast PM2.5 — ${where}`, data: f.pm25, borderColor: "#c98bdb",
     backgroundColor: "rgba(201,139,219,0.12)", fill: true,
   }], f.labels);
 }
@@ -414,10 +427,11 @@ async function init() {
   renderMetrics(card, s && s.metrics);
   renderExplainer(card);
   buildMetricToggle();
+  buildForecastAreas(net);
   loadTrend();
   loadPredictions();
-  loadForecast(24);
+  loadForecast();
   wireToggle("rangeToggle", "days", (d) => { curDays = d; loadTrend(); });
-  wireToggle("forecastToggle", "hours", loadForecast);
+  wireToggle("forecastToggle", "hours", (h) => { curFcHours = h; loadForecast(); });
 }
 init();

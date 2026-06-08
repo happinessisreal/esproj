@@ -9,6 +9,13 @@ by AQI_Prediction_Model.ipynb (Section 11):
     predictions_actual_vs_predicted.csv   model test-set predictions
     metrics.json                          headline metrics
 
+Real-time data:
+    /api/summary and /api/network overlay the *current* reading fetched live from
+    OpenAQ v3 (see live.py), falling back to the file snapshot if the API is
+    unreachable. Exported files are also hot-reloaded when they change on disk, so
+    re-running the notebook export / gen_network.py needs no server restart.
+    Set AQI_LIVE=0 to disable live fetching; AQI_LIVE_TTL tunes the cache (seconds).
+
 Run:
     pip install -r requirements.txt
     python app.py
@@ -17,12 +24,15 @@ Run:
 
 import os
 import json
+import threading
 import datetime as dt
 
 import joblib
 import numpy as np
 import pandas as pd
 from flask import Flask, jsonify, render_template, request
+
+import live
 
 # Folder holding the notebook's exported files (default: this folder).
 DATA_DIR = os.environ.get("AQI_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
@@ -41,8 +51,8 @@ CATEGORIES = [
 
 
 # --- Multi-pollutant channels shown on the dashboard -------------------------
-# All measured by the deployed WiFi air-quality monitor (AirGradient node at
-# RAJUK Uttara), read live through the OpenAQ v3 API — treated as our IoT node.
+# All measured by the primary public monitoring station (RAJUK Uttara), read
+# live through the OpenAQ v3 API.
 CHANNELS = [
     {"key": "pm25",        "label": "PM2.5",       "unit": "µg/m³", "source": "real", "color": "#45c4b0"},
     {"key": "pm1",         "label": "PM1",         "unit": "µg/m³", "source": "real", "color": "#7aa2c4"},
@@ -96,6 +106,32 @@ def load_state():
 
 STATE = load_state()
 
+# --- Hot-reload exported files when they change on disk -----------------------
+# Lets a re-run of the notebook export / gen_network.py show up without a server
+# restart (the live OpenAQ fetch handles the rest — see live.py).
+SOURCE_FILES = ["dashboard_data.csv", "predictions_actual_vs_predicted.csv",
+                "metrics.json", "aqi_model.joblib", "model_card.json", "network.json"]
+_reload_lock = threading.Lock()
+
+
+def _mtimes():
+    return {f: os.path.getmtime(_path(f)) for f in SOURCE_FILES if os.path.exists(_path(f))}
+
+
+STATE_MTIMES = _mtimes()
+
+
+def maybe_reload():
+    """Reload STATE if any source file's mtime changed since we last loaded."""
+    global STATE, STATE_MTIMES
+    cur = _mtimes()
+    if cur != STATE_MTIMES:
+        with _reload_lock:
+            if cur != STATE_MTIMES:  # re-check under lock
+                STATE = load_state()
+                STATE_MTIMES = cur
+
+
 # Feature set the forecaster knows how to reconstruct without future weather data.
 BASE_FEATURES = {"hour", "dow", "month", "pm25_lag1", "pm25_lag2", "pm25_lag3",
                  "pm25_lag24", "pm25_roll6", "pm25_roll24"}
@@ -113,6 +149,46 @@ def pm_features(series_values, ts):
     }
 
 
+def recursive_forecast(series, last_ts, model, features, hours):
+    """Roll the PM2.5 model forward `hours` steps, feeding each prediction back in.
+
+    `series` is a list of recent consecutive hourly PM2.5 values (mutated here);
+    `last_ts` is its final (UTC, tz-aware) timestamp.
+    """
+    labels, pm_fore, aqi_fore = [], [], []
+    for h in range(hours):
+        ts = last_ts + pd.Timedelta(hours=h + 1)
+        row = pm_features(series, ts)  # time features stay in UTC to match training
+        x = pd.DataFrame([[row[f] for f in features]], columns=features)
+        pred = max(float(model.predict(x)[0]), 0.0)
+        series.append(pred)
+        labels.append(ts.tz_convert(live.BD_TZ).strftime("%Y-%m-%d %H:%M"))
+        pm_fore.append(round(pred, 1))
+        aqi_fore.append(live.sub_index("pm25", pred, "µg/m³"))
+    return labels, pm_fore, aqi_fore
+
+
+def area_pm25_series(node):
+    """Clean recent hourly PM2.5 series for an area, fetched live from OpenAQ.
+
+    Returns (values, last_ts) or (None, None) if unavailable / too short.
+    """
+    try:
+        rows = live.fetch_pm25_hours(node[0])
+    except Exception:
+        rows = None
+    if not rows:
+        return None, None
+    s = pd.DataFrame(rows)
+    s["datetime"] = pd.to_datetime(s["datetime"], utc=True, errors="coerce")
+    s = s.dropna(subset=["datetime"]).set_index("datetime")["value"].sort_index()
+    s = s[(s >= 0) & (s < 100000)].dropna()
+    s = s.resample("1h").mean().interpolate(limit=6).dropna()  # consecutive hourly steps
+    if len(s) < 24:
+        return None, None
+    return s.tolist(), s.index[-1]
+
+
 # ----------------------------- ROUTES --------------------------------------
 @app.route("/")
 def index():
@@ -121,27 +197,46 @@ def index():
 
 @app.route("/api/summary")
 def api_summary():
+    maybe_reload()
     if STATE["data"] is None or STATE["data"].empty:
         return jsonify({"error": "No data. Run the notebook's Section 11 export first."}), 404
     d = STATE["data"]
     last = d.iloc[-1]
+
+    # Baseline: latest hourly reading from the exported series.
     aqi = int(last["aqi"]) if pd.notna(last["aqi"]) else None
-    # current reading for every channel that's present in the data
+    pm25 = round(float(last["pm25"]), 1)
+    latest_time = live.fmt_bd(last["datetime"])
     now = {}
     for ch in CHANNELS:
         k = ch["key"]
         if k in d.columns and pd.notna(last[k]):
             now[k] = round(float(last[k]), 1)
+
+    # Overlay the live OpenAQ reading for the primary node when available.
+    is_live = False
+    live_read = live.fetch_primary()
+    if live_read:
+        is_live = True
+        latest_time = live_read.get("latest_time") or latest_time
+        if live_read.get("pm25") is not None:
+            pm25 = live_read["pm25"]
+        if live_read.get("aqi") is not None:
+            aqi = live_read["aqi"]
+        for k, v in (live_read.get("now") or {}).items():
+            now[k] = v
+
     channels = [ch for ch in CHANNELS if ch["key"] in d.columns]
     return jsonify({
-        "latest_time": last["datetime"].strftime("%Y-%m-%d %H:%M UTC"),
-        "pm25": round(float(last["pm25"]), 1),
+        "latest_time": latest_time,
+        "pm25": pm25,
         "aqi": aqi,
         "category": aqi_category(aqi),
         "now": now,
         "channels": channels,
         "metrics": STATE["metrics"],
         "n_hours": int(len(d)),
+        "live": is_live,
     })
 
 
@@ -155,14 +250,27 @@ def api_meta():
 
 @app.route("/api/network")
 def api_network():
-    """Live snapshot from all IoT nodes across the city (multi-sensor view)."""
-    if not STATE.get("network"):
+    """Live snapshot from all IoT nodes across the city (multi-sensor view).
+
+    Refreshes each node's latest reading from OpenAQ v3 (cached, background) and
+    merges it onto network.json; falls back to the file snapshot if the live
+    fetch hasn't populated yet or the API is unreachable.
+    """
+    maybe_reload()
+    base = STATE.get("network")
+    live_net = live.fetch_network(base)
+    if live_net:
+        return jsonify(live_net)
+    if not base:
         return jsonify({"error": "No network.json. Run gen_network.py."}), 404
-    return jsonify(STATE["network"])
+    snapshot = dict(base)
+    snapshot["live"] = False  # serving the cached file, not a fresh fetch
+    return jsonify(snapshot)
 
 
 @app.route("/api/history")
 def api_history():
+    maybe_reload()
     if STATE["data"] is None:
         return jsonify({"error": "No data"}), 404
     days = int(request.args.get("days", 30))
@@ -170,10 +278,10 @@ def api_history():
     cutoff = d["datetime"].max() - pd.Timedelta(days=days)
     d = d[d["datetime"] >= cutoff]
     out = {
-        "labels": d["datetime"].dt.strftime("%Y-%m-%d %H:%M").tolist(),
+        "labels": d["datetime"].dt.tz_convert(live.BD_TZ).dt.strftime("%Y-%m-%d %H:%M").tolist(),
         "aqi": d["aqi"].astype("Int64").tolist(),
     }
-    # every available channel series (pm25, pm1, co2, temperature, humidity)
+    # every available channel series (pm25, pm1, temperature, humidity)
     for ch in CHANNELS:
         k = ch["key"]
         if k in d.columns:
@@ -183,6 +291,7 @@ def api_history():
 
 @app.route("/api/predictions")
 def api_predictions():
+    maybe_reload()
     if STATE["preds"] is None:
         return jsonify({"error": "No predictions"}), 404
     p = STATE["preds"]
@@ -190,7 +299,7 @@ def api_predictions():
     if len(p) > 1500:
         p = p.iloc[:: int(np.ceil(len(p) / 1500))]
     return jsonify({
-        "labels": p["datetime"].dt.strftime("%Y-%m-%d %H:%M").tolist(),
+        "labels": p["datetime"].dt.tz_convert(live.BD_TZ).dt.strftime("%Y-%m-%d %H:%M").tolist(),
         "actual": p["actual_pm25"].round(1).tolist(),
         "predicted": p["predicted_pm25"].round(1).tolist(),
     })
@@ -198,8 +307,16 @@ def api_predictions():
 
 @app.route("/api/forecast")
 def api_forecast():
-    if STATE["data"] is None or STATE["bundle"] is None:
-        return jsonify({"error": "Need dashboard_data.csv and aqi_model.joblib"}), 404
+    """Forecast PM2.5/AQI for an area using the trained model.
+
+    ?area=<name>  picks which IoT node to forecast (default: the primary node).
+    The primary node uses the rich local CSV history; other areas are forecast
+    from their recent hourly readings fetched live from OpenAQ. Same model either
+    way — it only needs recent PM2.5 + time features.
+    """
+    maybe_reload()
+    if STATE["bundle"] is None:
+        return jsonify({"error": "Need aqi_model.joblib"}), 404
     hours = min(int(request.args.get("hours", 24)), 72)
     model = STATE["bundle"]["model"]
     features = STATE["bundle"]["features"]
@@ -208,38 +325,26 @@ def api_forecast():
         return jsonify({"error": "Model uses weather features; live forecast needs "
                                  "future weather and isn't supported here."}), 200
 
-    d = STATE["data"]
-    if len(d) < 24:
-        return jsonify({"error": "Not enough history to forecast."}), 200
+    area = (request.args.get("area") or "").strip()
+    node = live.node_by_area(area) if area else None
 
-    series = d["pm25"].tolist()
-    last_ts = d["datetime"].iloc[-1]
+    if node is None or node[2]:  # primary node (or unspecified/unknown) → local history
+        d = STATE["data"]
+        if d is None or len(d) < 24:
+            return jsonify({"error": "Not enough history to forecast."}), 200
+        series, last_ts = d["pm25"].tolist(), d["datetime"].iloc[-1]
+        area_label = live.PRIMARY_AREA
+    else:  # another area → forecast from its live OpenAQ readings
+        series, last_ts = area_pm25_series(node)
+        if series is None:
+            return jsonify({"error": f"Not enough recent OpenAQ data for {node[1]} "
+                                     "to forecast."}), 200
+        area_label = node[1]
 
-    # convert AQI helper inline (mirror of notebook breakpoints)
-    bp = [(0.0, 9.0, 0, 50), (9.1, 35.4, 51, 100), (35.5, 55.4, 101, 150),
-          (55.5, 125.4, 151, 200), (125.5, 225.4, 201, 300), (225.5, 325.4, 301, 500)]
-
-    def to_aqi(c):
-        c = np.floor(c * 10) / 10
-        for clo, chi, ilo, ihi in bp:
-            if clo <= c <= chi:
-                return int(round((ihi - ilo) / (chi - clo) * (c - clo) + ilo))
-        return 500
-
-    labels, pm_fore, aqi_fore = [], [], []
-    for h in range(hours):
-        ts = last_ts + pd.Timedelta(hours=h + 1)
-        row = pm_features(series, ts)
-        x = pd.DataFrame([[row[f] for f in features]], columns=features)
-        pred = float(model.predict(x)[0])
-        pred = max(pred, 0.0)
-        series.append(pred)
-        labels.append(ts.strftime("%Y-%m-%d %H:%M"))
-        pm_fore.append(round(pred, 1))
-        aqi_fore.append(to_aqi(pred))
-
-    return jsonify({"labels": labels, "pm25": pm_fore, "aqi": aqi_fore})
+    labels, pm_fore, aqi_fore = recursive_forecast(series, last_ts, model, features, hours)
+    return jsonify({"labels": labels, "pm25": pm_fore, "aqi": aqi_fore,
+                    "area": area_label, "from": live.fmt_bd(last_ts)})
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="127.0.0.1", port=5000)
+    app.run(debug=False, host="127.0.0.1", port=5000)

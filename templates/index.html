@@ -38,19 +38,19 @@
         <div class="readout">
           <div><span class="k">PM2.5 now</span><span class="v" id="pm25">—</span><span class="u">µg/m³</span></div>
           <div><span class="k">Latest reading</span><span class="v small" id="latestTime">—</span></div>
-          <div><span class="k">IoT node</span><span class="v small" id="stationName">—</span></div>
+          <div><span class="k">Station</span><span class="v small" id="stationName">—</span></div>
         </div>
         <p class="note" id="heroNote">Latest hourly reading. AQI is derived from PM2.5 using the US EPA 2024 breakpoints.</p>
       </div>
     </section>
 
-    <!-- CITY SENSOR NETWORK: multiple IoT nodes -->
+    <!-- CITY SENSOR NETWORK: multiple public monitoring stations -->
     <section class="card">
       <div class="card-head">
-        <h2>City sensor network <span class="tag" id="netCount">— nodes</span></h2>
+        <h2>City sensor network <span class="tag" id="netCount">— stations</span></h2>
         <span class="updated live-dot" id="netUpdated">—</span>
       </div>
-      <p class="note net-intro">Live <strong>multi-pollutant</strong> readings from <strong>multiple deployed IoT monitors</strong> across Dhaka — each node covers a named area and reports every channel it carries (PM2.5, PM10, PM1, gases where available, plus temperature/humidity), read in real time from the OpenAQ v3 feed. Each node's headline AQI is its <em>worst</em> pollutant sub-index (the EPA dominant-pollutant rule), shown next to which pollutant is driving it.</p>
+      <p class="note net-intro">Live <strong>multi-pollutant</strong> readings from <strong>multiple public monitoring stations</strong> across Dhaka — each station covers a named area and reports every channel it carries (PM2.5, PM10, PM1, gases where available, plus temperature/humidity), read in real time from the OpenAQ v3 feed. Each station's headline AQI is its <em>worst</em> pollutant sub-index (the EPA dominant-pollutant rule), shown next to which pollutant is driving it.</p>
       <div id="map" class="map"></div>
       <div class="nodes" id="nodes"></div>
     </section>
@@ -65,7 +65,7 @@
 
     <!-- LIVE MULTI-POLLUTANT MONITORING (primary node) -->
     <section class="card">
-      <div class="card-head"><h2>Real-time monitoring <span class="tag">primary node · Uttara</span></h2><span class="tag" id="liveTime">latest reading</span></div>
+      <div class="card-head"><h2>Real-time monitoring <span class="tag">primary station · Uttara</span></h2><span class="tag" id="liveTime">latest reading</span></div>
       <div class="live" id="live"></div>
     </section>
 
@@ -133,13 +133,18 @@
           <button data-hours="48">48h</button>
         </div>
       </div>
+      <div class="forecast-area">
+        <label for="forecastArea">Area</label>
+        <select id="forecastArea"></select>
+        <span class="area-hint">same model, applied to each area's recent readings</span>
+      </div>
       <canvas id="forecastChart" height="110"></canvas>
       <p class="note" id="forecastNote"></p>
     </section>
   </main>
 
   <footer>
-    <p>Air Quality Monitoring &amp; Prediction System · data via OpenAQ v3 · AQI per US EPA 2024</p>
+    <p>Air Quality Monitoring &amp; Prediction System · data via OpenAQ v3 · AQI per US EPA 2024 · all times in Bangladesh Standard Time (BST, UTC+6)</p>
   </footer>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>

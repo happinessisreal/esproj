@@ -15,6 +15,7 @@ import pandas as pd
 import joblib
 
 DHAKA_LAT, DHAKA_LON = 23.8103, 90.4125
+BD = dt.timezone(dt.timedelta(hours=6))  # Bangladesh Standard Time (UTC+6), shown on the dashboard
 loc_id = int(sys.argv[1]) if len(sys.argv) > 1 else 0
 
 # --- derive everything we can from the exported files ------------------------
@@ -62,28 +63,29 @@ card = {
     "features": [{"name": k, "desc": FEATURE_DOC.get(k, k)} for k in features],
     "n_features": len(features),
     "coverage": {
-        "start": d["datetime"].min().strftime("%Y-%m-%d %H:%M UTC"),
-        "end":   d["datetime"].max().strftime("%Y-%m-%d %H:%M UTC"),
+        "start": d["datetime"].min().tz_convert(BD).strftime("%Y-%m-%d %H:%M BST"),
+        "end":   d["datetime"].max().tz_convert(BD).strftime("%Y-%m-%d %H:%M BST"),
         "total_hours": int(len(d)),
     },
     "split": {
         "scheme": "time-ordered 80 / 20 (no shuffle)",
         "train_hours": int(n_train),
         "test_hours": int(n_test),
-        "train_start": train_start.strftime("%Y-%m-%d"),
-        "train_end":   train_end.strftime("%Y-%m-%d"),
-        "test_start":  test_start.strftime("%Y-%m-%d"),
-        "test_end":    test_end.strftime("%Y-%m-%d"),
+        "train_start": train_start.tz_convert(BD).strftime("%Y-%m-%d"),
+        "train_end":   train_end.tz_convert(BD).strftime("%Y-%m-%d"),
+        "test_start":  test_start.tz_convert(BD).strftime("%Y-%m-%d"),
+        "test_end":    test_end.tz_convert(BD).strftime("%Y-%m-%d"),
     },
     "metrics": metrics,
     "forecast": {"method": "recursive (feeds each prediction back as the next lag)",
                  "max_hours": 72},
-    "trained_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+    # when the model file was actually produced (not when this card was regenerated)
+    "trained_at": dt.datetime.fromtimestamp(os.path.getmtime("aqi_model.joblib"), BD).strftime("%Y-%m-%d %H:%M BST"),
     "station": None,
 }
 
 # --- station identity from OpenAQ (best effort) ------------------------------
-key = os.environ.get("OPENAQ_API_KEY")
+key = "17803b50a1dac87cafdb7056be122a9e9ea8d1e8abef8df48f3183c8fb2a8d1c"
 if loc_id and key:
     try:
         import requests
